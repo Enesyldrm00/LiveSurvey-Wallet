@@ -1,1 +1,64 @@
-/LEARNING.md
+# ============================================================
+# Rust / Soroban Build Artifacts
+# ============================================================
+target/
+contracts/**/target/
+*.wasm
+*.pdb
+*.exe
+*.dll
+*.so
+*.dylib
+
+# ============================================================
+# Node.js / Next.js
+# ============================================================
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+out/
+frontend/out/
+*.tsbuildinfo
+frontend/tsconfig.tsbuildinfo
+
+# ============================================================
+# Environment & Secrets — NEVER commit these
+# ============================================================
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ============================================================
+# Stellar CLI Identity Files (contain secret keys!)
+# ============================================================
+.config/stellar/identity/
+
+# ============================================================
+# OS & Editor Noise
+# ============================================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================================================
+# Logs
+# ============================================================
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ============================================================
+# Misc
+# ============================================================
+*.orig
+*.bak

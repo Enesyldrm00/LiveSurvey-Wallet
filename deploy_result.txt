@@ -1,0 +1,62 @@
+﻿stellar : Ôä╣´©Å  Sim
+ulating install trans
+actionÔÇĞ
+At line:1 char:1
++ stellar contract de
+ploy --wasm "C:\Users
+\enes\Desktop\CanlıAn
+ket-Wall ...
++ ~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~
+    + CategoryInfo   
+           : NotSpe  
+  cified: (Ôä╣´©Å    
+  Simulat... tran    
+sactionÔÇĞ:Strin    g
+) [], RemoteExc    ep
+tion
+    + FullyQualified 
+   ErrorId : Native  
+  CommandError
+ 
+Ôä╣´©Å  Signing trans
+action: 200adc371640f
+2b109e7a13e24fb6f2c8f
+5278cfa1ffcfd504911ca
+98d43af22
+­şîÄ Submitting insta
+ll transactionÔÇĞ
+Ôä╣´©Å  Using wasm ha
+sh 6d6c10f34381bbda7e
+c3dd84492364eb1e5c8b0
+a79d65defb4cc8b92f3c2
+a1b1
+Ôä╣´©Å  Simulating de
+ploy transactionÔÇĞ
+Ôä╣´©Å  Transaction h
+ash is f35ebbb6ad1a8b
+a4a947fcd2c376e7f27a2
+ad6d378428fd26d4e03a1
+5517c20b
+­şöù https://stellar.
+expert/explorer/testn
+et/tx/f35ebbb6ad1a8ba
+4a947fcd2c376e7f27a2a
+d6d378428fd26d4e03a15
+517c20b
+Ôä╣´©Å  Signing trans
+action: f35ebbb6ad1a8
+ba4a947fcd2c376e7f27a
+2ad6d378428fd26d4e03a
+15517c20b
+­şîÄ Submitting deplo
+y transactionÔÇĞ
+­şöù https://lab.stel
+lar.org/r/testnet/con
+tract/CD53SYMMTIQNZZY
+PYCXMER67BGLNRGKI46JX
+FFHFWESW7E3NJUP6BD7K
+Ô£à Deployed!
+CD53SYMMTIQNZZYPYCXMER67BGLNRGKI46JXFFHFWESW7E3NJUP6BD7K

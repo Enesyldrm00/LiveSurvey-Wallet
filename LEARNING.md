@@ -18,6 +18,7 @@
 9. [Bölüm 4: Test Yazmanın Kutsallığı](#9-bölüm-4-test-yazmanın-kutsallığı)
 10. [Bölüm 5: Testnet ve Gerçek Dünya](#10-bölüm-5-testnet-ve-gerçek-dünya)
 11. [Bölüm 8: Proje Hijyeni ve Cüzdan Köprüsü](#11-bölüm-8-proje-hijyeni-ve-cüzdan-köprüsü)
+12. [Bölüm 17: Semboller ve Veri Eşleşmesi](#12-bölüm-17-semboller-ve-veri-eşleşmesi)
 
 ---
 
@@ -964,3 +965,340 @@ addToast('error', "Yetersiz bakiye. Friendbot'tan test XLM alın: friendbot.stel
 *Bu dosya, her kod güncellemesinde otomatik olarak güncellenmektedir.*
 *Soroban Dokümantasyonu: https://developers.stellar.org/docs/build/smart-contracts*
 
+---
+
+## 12. Bölüm 17: Semboller ve Veri Eşleşmesi
+
+> *"Blockchain'de bir karakter farkı, sıfır ile bir arasındaki farktır. Kontrat ne yazıyorsa, frontend onu yazar — ne fazla, ne eksik."*
+
+---
+
+### Symbol Tipi: Soroban'ın Kimlik Kartı
+
+Soroban'da `Symbol`, bir string'in özel, verimli biçimidir. Kontrat içinde seçenekleri, event topic'lerini ve storage key'lerini temsil etmek için kullanılır.
+
+```rust
+// Rust kontrat tarafı — initialize çağrısında seçenekler belirlenir
+pub fn initialize(env: Env, admin: Address, options: Vec<Symbol>) -> Result<(), PollError> {
+    // options = [Symbol::new(&env, "AI_AGI"), Symbol::new(&env, "WEB3_SOROBAN"), ...]
+    // Bu değerler artık kontratın "gerçeği" — değiştirilemez!
+    env.storage().instance().set(&DataKey::Options, &options);
+}
+```
+
+```typescript
+// TypeScript frontend tarafı — vote çağrısında aynı string gönderilmeli
+xdr.ScVal.scvSymbol("AI_AGI")      // ✅ Doğru
+xdr.ScVal.scvSymbol("Ai_Agi")      // ❌ Yanlış — büyük/küçük harf farkı!
+xdr.ScVal.scvSymbol("🤖 Yapay Zeka") // ❌ Yanlış — display label gönderilmiş!
+```
+
+---
+
+### Neden Case-Sensitivity Bu Kadar Kritik?
+
+Blockchain'de veriler **byte-by-byte** karşılaştırılır. `"AI_AGI"` ve `"ai_agi"` tamamen farklı iki değerdir:
+
+```
+"AI_AGI"    →  bytes: [0x41, 0x49, 0x5F, 0x41, 0x47, 0x49]
+"ai_agi"    →  bytes: [0x61, 0x69, 0x5F, 0x61, 0x67, 0x69]
+                       ↑ farklı!    ↑ farklı!    ↑ farklı!
+```
+
+Kontrat `tally.contains_key(option)` ile kontrol eder. Eğer key eşleşmezse:
+
+```rust
+if !tally.contains_key(option.clone()) {
+    return Err(PollError::InvalidOption);  // ← Bu hatayı alırsın!
+}
+```
+
+---
+
+### Display Label vs. Contract Symbol: Doğru Mimari
+
+En yaygın hata: kullanıcıya gösterilen metni (`"🤖 Yapay Zeka & AGI"`) kontrata göndermek.
+
+```typescript
+// ❌ Yanlış mimari — state'te display label saklanıyor
+const [selectedOption, setSelectedOption] = useState<string | null>(null);
+
+// Kullanıcı butona tıkladığında:
+setSelectedOption(OPTION_LABELS[opt]);  // "🤖 Yapay Zeka & AGI" — YANLIŞ!
+
+// Vote çağrısında:
+xdr.ScVal.scvSymbol(selectedOption)  // Kontrat bunu tanımaz → InvalidOption!
+```
+
+```typescript
+// ✅ Doğru mimari — state'te Symbol key saklanıyor
+const KNOWN_OPTIONS = ["AI_AGI", "WEB3_SOROBAN", "DEFI", "NFT_META"];  // Contract symbols
+const OPTION_LABELS: Record<string, string> = {                          // Display only
+    AI_AGI:       "🤖 Yapay Zeka & AGI",
+    WEB3_SOROBAN: "🌐 Web3 & Soroban",
+    DEFI:         "💰 DeFi'nin Geleceği",
+    NFT_META:     "🎨 NFT & Metaverse",
+};
+
+// Kullanıcı butona tıkladığında:
+setSelectedOption(opt);  // "AI_AGI" — DOĞRU! Symbol key saklanıyor
+
+// UI'da gösterirken:
+{OPTION_LABELS[opt]}     // "🤖 Yapay Zeka & AGI" — sadece görüntü için
+
+// Vote çağrısında:
+xdr.ScVal.scvSymbol(selectedOption)  // "AI_AGI" — kontrat bunu tanır ✅
+```
+
+**Kural:** State'te her zaman **kontrat sembolünü** sakla. Display label'ı sadece render sırasında kullan.
+
+---
+
+### InvalidOption Hatasını Teşhis Etme
+
+Eğer `InvalidOption` hatası alıyorsan, şu adımları izle:
+
+#### Adım 1: Kontratın gerçek seçeneklerini sorgula
+
+```bash
+# Kontratın initialize edildiği seçenekleri görmek için:
+stellar contract invoke \
+  --id CD53SYMMTIQNZZYPYCXMER67BGLNRGKI46JXFFHFWESW7E3NJUP6BD7K \
+  --source poll_admin \
+  --network testnet \
+  -- get_options
+
+# Çıktı örneği:
+# ["AI_AGI", "WEB3_SOROBAN", "DEFI", "NFT_META"]
+```
+
+#### Adım 2: Frontend'in ne gönderdiğini kontrol et
+
+Browser DevTools → Console'da oy vermeden önce şunu görmelisin:
+
+```
+🗳️ Sending vote with Symbol: AI_AGI
+   Contract expects one of: ["AI_AGI", "WEB3_SOROBAN", "DEFI", "NFT_META"]
+```
+
+Eğer bu iki liste eşleşmiyorsa, `KNOWN_OPTIONS` array'ini güncelle.
+
+#### Adım 3: XDR hata kodunu decode et
+
+Hata aldığında console'da `errorResult (XDR base64)` değeri görünür. Bunu decode etmek için:
+
+```
+# Yöntem 1: Stellar XDR Viewer (en kolay)
+https://stellar.expert/explorer/testnet/xdr-viewer
+→ Type: TransactionResult
+→ Paste the base64 string
+→ Soroban error code'u göreceksin
+
+# Yöntem 2: Browser console (StellarSdk global olarak yüklüyse)
+StellarSdk.xdr.TransactionResult
+  .fromXDR("<base64_buraya>", "base64")
+  .result().results()[0]
+  .tr().invokeHostFunctionResult()
+  .code()
+```
+
+---
+
+### Symbol Uzunluk Limitleri
+
+Soroban `Symbol` tipinin iki farklı kullanımı vardır:
+
+| Kullanım | Makro/Fonksiyon | Limit | Kullanım Yeri |
+|----------|----------------|-------|---------------|
+| Kısa sembol | `symbol_short!("poll")` | **9 karakter** | Event topics |
+| Uzun sembol | `Symbol::new(&env, "WEB3_SOROBAN")` | **32 karakter** | Storage keys, seçenekler |
+
+```rust
+// ✅ Doğru: Event topic için symbol_short (≤9 karakter)
+env.events().publish(
+    (symbol_short!("poll"), symbol_short!("voted")),  // 4 ve 5 karakter — OK
+    data
+);
+
+// ✅ Doğru: Seçenek için Symbol::new (≤32 karakter)
+// "WEB3_SOROBAN" = 12 karakter — OK
+// "NFT_META" = 8 karakter — OK
+
+// ❌ Yanlış: symbol_short ile 9+ karakter
+symbol_short!("WEB3_SOROBAN")  // DERLEME HATASI — 12 karakter, limit 9!
+```
+
+---
+
+> **💡 Usta Notu (Senior Note) — "Single Source of Truth" Prensibi**
+>
+> Bu hata, yazılım mühendisliğinin en temel prensiplerinden birini ihlal etmekten kaynaklanır: **Single Source of Truth (Tek Doğru Kaynak)**.
+>
+> Projemizde iki farklı "gerçek" var:
+> 1. **Kontrat gerçeği**: `initialize` çağrısında belirlenen Symbol listesi — değiştirilemez, blockchain'de kalıcı
+> 2. **Frontend gerçeği**: `KNOWN_OPTIONS` array'i — kod değişikliğiyle güncellenebilir
+>
+> Bu ikisi **senkronize olmak zorunda**. Eğer kontratı yeniden deploy etmeden seçenekleri değiştirirsen, frontend yanlış semboller gönderir ve `InvalidOption` alırsın.
+>
+> **Profesyonel çözüm**: Frontend'in `KNOWN_OPTIONS`'ı hardcode etmek yerine, uygulama başladığında `get_options()` fonksiyonunu çağırarak kontraktan dinamik olarak okuması:
+>
+> ```typescript
+> // Daha iyi yaklaşım: Seçenekleri kontraktan oku
+> useEffect(() => {
+>     const fetchOptions = async () => {
+>         // get_options() çağrısı yap
+>         // Dönen Symbol listesini KNOWN_OPTIONS olarak kullan
+>         // Artık frontend ve kontrat her zaman senkronize!
+>     };
+>     fetchOptions();
+> }, []);
+> ```
+>
+> Bu yaklaşımla kontratı yeniden initialize etsen bile frontend otomatik olarak güncellenir — kod değişikliği gerekmez.
+
+---
+
+## 13. Bölüm 23: Veri Tutarlılığı ve Terminal Disiplini
+
+> *"Blockchain'de bir harf farkı, sıfır ile bir arasındaki farktır. Terminal'de yanlış dizin, çalışmayan bir sunucu demektir."*
+
+---
+
+### Neden Tek Bir Küçük Harf Akıllı Kontrat Çağrısını Bozar?
+
+Soroban kontratları `Symbol` tipini **byte-by-byte** karşılaştırır. Bu, `"AI_AGI"` ile `"ai_agi"`'nin tamamen farklı iki değer olduğu anlamına gelir:
+
+```
+"AI_AGI"       →  bytes: [0x41, 0x49, 0x5F, 0x41, 0x47, 0x49]
+"ai_agi"       →  bytes: [0x61, 0x69, 0x5F, 0x61, 0x67, 0x69]
+                           ↑ farklı!    ↑ farklı!    ↑ farklı!
+"Ai_Agi"       →  bytes: [0x41, 0x69, 0x5F, 0x41, 0x67, 0x69]
+                                  ↑ farklı!         ↑ farklı!
+```
+
+Kontrat `tally.contains_key(option)` ile kontrol eder. Eğer key eşleşmezse anında `InvalidOption (kod: 3)` hatası döner — hiçbir oy kaydedilmez.
+
+#### Bu Projedeki Kesin Eşleşme Tablosu
+
+| Kullanıcıya Gösterilen (Display Label) | Kontrata Gönderilen (Contract Symbol) |
+|----------------------------------------|---------------------------------------|
+| 🤖 Yapay Zeka & AGI                   | `AI_AGI`                              |
+| 🌐 Web3 & Soroban                     | `Web3_Soroban`                        |
+| 💰 DeFi'nin Geleceği                  | `DeFi_Future`                         |
+| 🎨 NFT & Metaverse                    | `NFT_Metaverse`                       |
+
+> **⚠️ Kritik:** Display label'ı (`"🤖 Yapay Zeka & AGI"`) asla kontrata gönderme! Sadece contract symbol'ü (`"AI_AGI"`) gönder.
+
+#### Doğru Mimari: State'te Her Zaman Contract Symbol Sakla
+
+```typescript
+// KNOWN_OPTIONS → kontrata gönderilen değerler (initialize ile belirlendi)
+const KNOWN_OPTIONS = ["AI_AGI", "Web3_Soroban", "DeFi_Future", "NFT_Metaverse"];
+
+// OPTION_LABELS → sadece ekranda göstermek için
+const OPTION_LABELS: Record<string, string> = {
+    AI_AGI:        "🤖 Yapay Zeka & AGI",
+    Web3_Soroban:  "🌐 Web3 & Soroban",
+    DeFi_Future:   "💰 DeFi'nin Geleceği",
+    NFT_Metaverse: "🎨 NFT & Metaverse",
+};
+
+// Kullanıcı seçim yaptığında: state'e contract symbol yaz
+setSelectedOption(opt);          // "AI_AGI" — DOĞRU ✅
+
+// Kontrata gönderirken: doğrudan state kullan
+xdr.ScVal.scvSymbol(selectedOption);  // "AI_AGI" — kontrat bunu tanır ✅
+
+// Ekranda gösterirken: label'a çevir
+{OPTION_LABELS[opt]}             // "🤖 Yapay Zeka & AGI" — sadece görüntü ✅
+```
+
+#### Belt-and-Suspenders: Gönderim Öncesi Doğrulama
+
+Güvenli kod, `vote()` çağrısından önce `selectedOption`'ın gerçekten `KNOWN_OPTIONS` içinde olduğunu kontrol eder:
+
+```typescript
+if (!KNOWN_OPTIONS.includes(selectedOption)) {
+    // Bu noktaya hiç ulaşılmamalı — eğer ulaşılıyorsa state yönetiminde bug var
+    addToast('error', `❌ Geliştirici hatası: "${selectedOption}" kontrat seçeneklerinde yok!`);
+    console.error('BUG: selectedOption is not in KNOWN_OPTIONS:', selectedOption);
+    return;
+}
+```
+
+---
+
+### Terminal Disiplini: `cd frontend` Neden Zorunlu?
+
+#### ENOENT Hatasının Kökü
+
+```
+Error: ENOENT: no such file or directory, open '.../package.json'
+```
+
+`npm`, `package.json` dosyasını **çalıştırıldığı dizinde** arar. Bu projenin kök dizininde (`CanlıAnket-Wallet/`) `package.json` yoktur:
+
+```
+CanlıAnket-Wallet/          ← Burada package.json YOK → ENOENT!
+├── contracts/
+│   └── poll/
+│       └── Cargo.toml      ← Rust bağımlılıkları burada
+├── frontend/
+│   └── package.json        ← npm'in aradığı dosya BURADA
+└── LEARNING.md
+```
+
+#### Doğru Komut Sırası (Her Seferinde)
+
+```bash
+# ✅ DOĞRU — önce dizine gir, sonra çalıştır
+cd frontend
+npm run dev
+
+# ❌ YANLIŞ — kök dizinden çalıştırmak
+npm run dev        # → ENOENT: package.json bulunamadı!
+```
+
+> **💡 Altın Kural:** Terminal'i her açtığında veya yeni bir oturum başlattığında, `pwd` komutuyla nerede olduğunu kontrol et. `CanlıAnket-Wallet/frontend` görmelisin, `CanlıAnket-Wallet/` değil.
+
+#### Hızlı Kontrol Komutu
+
+```bash
+# Nerede olduğunu görmek için:
+pwd
+# Çıktı olmalı: .../CanlıAnket-Wallet/frontend
+
+# Eğer .../CanlıAnket-Wallet/ görüyorsan:
+cd frontend
+npm run dev
+```
+
+---
+
+### Hata Kodu Referans Tablosu
+
+Bir `errorResult` (XDR base64) aldığında, [https://stellar.expert/explorer/testnet/xdr-viewer](https://stellar.expert/explorer/testnet/xdr-viewer) adresine yapıştır ve şu kodlara bak:
+
+| Kod | Hata Adı | Olası Neden | Çözüm |
+|-----|----------|-------------|-------|
+| 1 | `PollNotInitialized` | `initialize()` hiç çağrılmamış | `stellar contract invoke -- initialize` çalıştır |
+| 2 | `AlreadyVoted` | Bu adres zaten oy kullandı | Farklı adres kullan veya beklenen davranış |
+| 3 | `InvalidOption` | Gönderilen symbol kontratla eşleşmiyor | `KNOWN_OPTIONS`'ı `get_options` çıktısıyla karşılaştır |
+| 4 | `AlreadyInitialized` | `initialize()` iki kez çağrıldı | Beklenen davranış — tekrar çağırma |
+| 5 | `Unauthorized` | `require_auth()` başarısız | İşlemi doğru adresle imzala |
+
+> **💡 Usta Notu (Senior Note)**
+>
+> Bu iki hata türü — `InvalidOption` ve `ENOENT` — farklı katmanlarda aynı problemi temsil eder: **veri tutarsızlığı**.
+>
+> `InvalidOption`: Frontend'in gönderdiği string, blockchain'deki string'le eşleşmiyor.
+> `ENOENT`: Terminal'in baktığı dizin, `package.json`'ın bulunduğu dizinle eşleşmiyor.
+>
+> Her ikisinde de çözüm aynıdır: **Kaynağı doğrula.** Kontrat için `get_options` çalıştır. Terminal için `pwd` çalıştır. Sonra eşleştir.
+>
+> Profesyonel geliştirici, her şeyin "çalışması gerektiğini" varsaymaz — **doğrular**.
+
+---
+
+*Bu dosya, her kod güncellemesinde otomatik olarak güncellenmektedir.*
+*Soroban Dokümantasyonu: https://developers.stellar.org/docs/build/smart-contracts*

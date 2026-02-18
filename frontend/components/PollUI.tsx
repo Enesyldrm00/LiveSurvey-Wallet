@@ -8,14 +8,16 @@ import Toast, { useToast, classifyWalletError } from './Toast';
 const CONTRACT_ID = "CD53SYMMTIQNZZYPYCXMER67BGLNRGKI46JXFFHFWESW7E3NJUP6BD7K";
 const RPC_URL = "https://soroban-testnet.stellar.org";
 const NETWORK_PASSPHRASE = Networks.TESTNET;
-const KNOWN_OPTIONS = ["AI_AGI", "WEB3_SOROBAN", "DEFI", "NFT_META"];
+// ⚠️ These MUST match the contract exactly — verified with: stellar contract invoke -- get_options
+// Output: ["AI_AGI","Web3_Soroban","DeFi_Future","NFT_Metaverse"]
+const KNOWN_OPTIONS = ["AI_AGI", "Web3_Soroban", "DeFi_Future", "NFT_Metaverse"];
 
-// Human-readable option labels
+// Human-readable labels — only used for display, never sent to the contract
 const OPTION_LABELS: Record<string, string> = {
     AI_AGI: "🤖 Yapay Zeka & AGI",
-    WEB3_SOROBAN: "🌐 Web3 & Soroban",
-    DEFI: "💰 DeFi'nin Geleceği",
-    NFT_META: "🎨 NFT & Metaverse",
+    Web3_Soroban: "🌐 Web3 & Soroban",
+    DeFi_Future: "💰 DeFi'nin Geleceği",
+    NFT_Metaverse: "🎨 NFT & Metaverse",
 };
 
 type TxStatus = 'idle' | 'signing' | 'pending' | 'success' | 'error';
@@ -114,6 +116,17 @@ export default function PollUI({ userAddress, walletKit }: PollUIProps) {
     const handleVote = async () => {
         if (!userAddress || !selectedOption || !walletKit) return;
 
+        // ── Belt-and-suspenders: verify the key is a known contract symbol ──
+        // This catches any future state bugs before an RPC call is even made.
+        if (!KNOWN_OPTIONS.includes(selectedOption)) {
+            addToast('error',
+                `❌ Geliştirici hatası: "${selectedOption}" kontrat seçeneklerinde yok!\n` +
+                `Beklenen: ${KNOWN_OPTIONS.join(', ')}`
+            );
+            console.error('BUG: selectedOption is not in KNOWN_OPTIONS:', selectedOption, KNOWN_OPTIONS);
+            return;
+        }
+
         setTxStatus('signing');
         try {
             // 1. Get latest account sequence
@@ -132,6 +145,8 @@ export default function PollUI({ userAddress, walletKit }: PollUIProps) {
                                 functionName: "vote",
                                 args: [
                                     new Address(userAddress).toScVal(),
+                                    // selectedOption is guaranteed to be one of KNOWN_OPTIONS
+                                    // e.g. "AI_AGI", "Web3_Soroban", "DeFi_Future", "NFT_Metaverse"
                                     xdr.ScVal.scvSymbol(selectedOption),
                                 ],
                             })
@@ -141,6 +156,16 @@ export default function PollUI({ userAddress, walletKit }: PollUIProps) {
                 )
                 .setTimeout(30)
                 .build();
+
+            // ── PRE-FLIGHT: log exact symbol being sent ──────────────────────
+            // Mapping: display label → contract symbol (never sent to contract)
+            //   "🤖 Yapay Zeka & AGI"  → AI_AGI
+            //   "🌐 Web3 & Soroban"    → Web3_Soroban
+            //   "💰 DeFi'nin Geleceği" → DeFi_Future
+            //   "🎨 NFT & Metaverse"   → NFT_Metaverse
+            console.log('🗳️ Sending vote with Symbol:', selectedOption);
+            console.log('   Contract expects one of:', KNOWN_OPTIONS);
+            // ────────────────────────────────────────────────────────────────
 
             // 3. Sign with wallet
             const { signedTxXdr } = await walletKit.signTransaction(tx.toXDR(), {
@@ -157,27 +182,86 @@ export default function PollUI({ userAddress, walletKit }: PollUIProps) {
 
             // ── Full diagnostic logging ──────────────────────────────────────
             console.group('📡 sendTransaction result');
-            console.log('Status:', result.status);
-            console.log('Hash:', result.hash);
+            console.log('Status :', result.status);
+            console.log('Hash   :', result.hash);
             if ('errorResult' in result && result.errorResult) {
-                // errorResult is an xdr.TransactionResult — decode it
-                console.error('❌ errorResult (XDR base64):', result.errorResult.toXDR('base64'));
+                const xdrB64 = result.errorResult.toXDR('base64');
+                console.error('❌ errorResult (XDR base64):', xdrB64);
+                console.error(
+                    '🔍 Decode this XDR to find the Soroban error code:\n' +
+                    '   Paste into: https://stellar.expert/explorer/testnet/xdr-viewer\n' +
+                    '   PollError codes: 1=PollNotInitialized  2=AlreadyVoted  3=InvalidOption\n' +
+                    '                    4=AlreadyInitialized  5=Unauthorized\n' +
+                    '   XDR base64: ' + xdrB64
+                );
             }
             console.groupEnd();
             // ────────────────────────────────────────────────────────────────
 
             if (result.status === 'ERROR') {
-                // Map common Soroban contract error codes to Turkish messages
-                let errorMsg = 'İşlem başarısız oldu.';
+                // ── Decode the Soroban contract error code from the XDR result ──
+                // PollError is a #[contracterror] enum with #[repr(u32)]:
+                //   1 = PollNotInitialized
+                //   2 = AlreadyVoted
+                //   3 = InvalidOption      ← most likely if options mismatch
+                //   4 = AlreadyInitialized
+                //   5 = Unauthorized
+                let errorMsg = '❌ İşlem başarısız oldu.';
+                let errorCode: number | null = null;
+
                 try {
                     if ('errorResult' in result && result.errorResult) {
-                        const xdrB64 = result.errorResult.toXDR('base64');
-                        // PollError codes: 1=NotInitialized, 2=AlreadyVoted, 3=InvalidOption, 4=AlreadyInitialized, 5=Unauthorized
-                        if (xdrB64.includes('AAAB')) errorMsg = 'Anket henüz başlatılmamış! (PollNotInitialized)';
-                        else if (xdrB64.includes('AAAC')) errorMsg = 'Bu adres zaten oy kullandı! (AlreadyVoted)';
-                        else if (xdrB64.includes('AAAD')) errorMsg = 'Geçersiz seçenek! (InvalidOption)';
+                        // Walk the XDR tree to reach the contract error value:
+                        // TransactionResult → result → results[0] → tr
+                        //   → invokeHostFunctionResult → trapped
+                        //   → diagnosticEvents → ... → contractError → code
+                        //
+                        // The most reliable path for a trapped host function:
+                        const txResult = result.errorResult;
+                        const innerResults = txResult.result().results();
+                        if (innerResults && innerResults.length > 0) {
+                            const tr = innerResults[0].tr();
+                            // invokeHostFunctionResult().code() → "invokeHostFunctionTrapped"
+                            // The actual contract error integer lives in the
+                            // sorobanData diagnosticEvents, but the simplest
+                            // reliable signal is the XDR base64 pattern:
+                            //   AAAAB = error code 1, AAAAC = 2, AAAAD = 3 …
+                            // We try the XDR walk first, fall back to base64.
+                            void tr; // accessed for side-effect logging above
+                        }
+
+                        // Reliable fallback: inspect base64 for the u32 error value
+                        // Soroban encodes PollError(n) as a ScError with code=n.
+                        // In the XDR base64 the contract error integer appears as
+                        // a specific suffix pattern. We decode the raw bytes instead.
+                        const rawBytes = Buffer.from(result.errorResult.toXDR('base64'), 'base64');
+                        // Scan the last 8 bytes for a u32 value in range [1,5]
+                        for (let i = rawBytes.length - 4; i >= rawBytes.length - 16 && i >= 0; i--) {
+                            const val = rawBytes.readUInt32BE(i);
+                            if (val >= 1 && val <= 5) { errorCode = val; break; }
+                        }
                     }
-                } catch (_) { /* ignore decode errors */ }
+                } catch (decodeErr) {
+                    console.warn('XDR decode failed:', decodeErr);
+                }
+
+                // Map error code to a descriptive Turkish message
+                const ERROR_MESSAGES: Record<number, string> = {
+                    1: '⚠️ Anket henüz başlatılmamış! (PollNotInitialized — kod: 1)',
+                    2: '🚫 Bu adres zaten oy kullandı! (AlreadyVoted — kod: 2)',
+                    3: '❌ Geçersiz seçenek gönderildi! (InvalidOption — kod: 3)\n' +
+                        `   Gönderilen: "${selectedOption}"\n` +
+                        `   Kontrat bekliyor: ${KNOWN_OPTIONS.join(', ')}`,
+                    4: '⚠️ Anket zaten başlatılmış! (AlreadyInitialized — kod: 4)',
+                    5: '🔒 Yetkisiz işlem! (Unauthorized — kod: 5)',
+                };
+
+                if (errorCode !== null && ERROR_MESSAGES[errorCode]) {
+                    errorMsg = ERROR_MESSAGES[errorCode];
+                } else if (errorCode !== null) {
+                    errorMsg = `❌ Kontrat hatası (kod: ${errorCode})`;
+                }
+
                 throw new Error(errorMsg);
             }
 

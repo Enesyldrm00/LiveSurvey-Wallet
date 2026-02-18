@@ -3,29 +3,33 @@
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror,
     symbol_short,
-    Address, Env, Symbol, Vec,
+    Address, Env, Map, Symbol, Vec,
 };
 
 // ============================================================
 // STORAGE KEYS
 // ============================================================
-// Soroban'da depolama için tip-güvenli anahtarlar kullanırız.
-// Bu enum, kontratımızdaki tüm depolama anahtarlarını tanımlar.
+/// Kontratın tüm depolama anahtarları.
+/// `#[contracttype]` ile XDR serileştirmesi otomatik sağlanır.
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
-    Admin,           // Anket yöneticisinin adresi
-    Options,         // Geçerli anket seçenekleri listesi (Vec<Symbol>)
-    VoteCount(Symbol), // Her seçenek için oy sayısı (Persistent)
-    HasVoted(Address), // Bir adresin oy verip vermediği (Persistent)
-    Initialized,     // Anketin başlatılıp başlatılmadığı
+    /// Anket yöneticisinin adresi (Instance storage)
+    Admin,
+    /// Geçerli seçenekler listesi — Vec<Symbol> (Instance storage)
+    Options,
+    /// Anketin başlatılıp başlatılmadığı (Instance storage)
+    Initialized,
+    /// Oy sayım tablosu: Map<Symbol, u32> (Persistent storage)
+    Tally,
+    /// Oy kullananlar: Map<Address, bool> (Persistent storage)
+    Voters,
 }
 
 // ============================================================
 // CUSTOM ERRORS
 // ============================================================
-// Hata kodları u32 olarak tanımlanır ve Soroban tarafından
-// istemciye iletilir. Bu, frontend'in hatayı anlamasını sağlar.
+/// Kontrat hata kodları. u32 olarak kodlanır ve istemciye iletilir.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -36,7 +40,7 @@ pub enum PollError {
     AlreadyVoted = 2,
     /// Geçersiz seçenek — listede yok
     InvalidOption = 3,
-    /// Anket zaten başlatılmış (tekrar initialize edilemez)
+    /// Anket zaten başlatılmış
     AlreadyInitialized = 4,
     /// Yalnızca admin bu işlemi yapabilir
     Unauthorized = 5,
@@ -58,39 +62,36 @@ impl PollContract {
     ///
     /// # Parametreler
     /// - `admin`: Anketi yöneten adres (auth gerektirir)
-    /// - `options`: Geçerli oy seçenekleri listesi (Symbol)
-    ///
-    /// # Örnek
-    /// ```
-    /// initialize(env, admin_address, vec![symbol_short!("evet"), symbol_short!("hayir")])
-    /// ```
+    /// - `options`: Geçerli oy seçenekleri listesi (Vec<Symbol>)
     pub fn initialize(
         env: Env,
         admin: Address,
         options: Vec<Symbol>,
     ) -> Result<(), PollError> {
-        // Anket zaten başlatılmışsa hata döndür
+        // Zaten başlatılmışsa hata döndür
         if env.storage().instance().has(&DataKey::Initialized) {
             return Err(PollError::AlreadyInitialized);
         }
 
-        // Admin'in bu işlemi yetkilendirmesini zorunlu kıl
+        // Admin imzasını doğrula
         admin.require_auth();
 
-        // Admin adresini kaydet
+        // Admin ve seçenekleri instance storage'a yaz
         env.storage().instance().set(&DataKey::Admin, &admin);
-
-        // Seçenekleri kaydet
         env.storage().instance().set(&DataKey::Options, &options);
 
-        // Her seçenek için başlangıç oy sayısını 0 olarak ayarla
+        // Tally map'ini başlat: her seçenek için 0
+        let mut tally: Map<Symbol, u32> = Map::new(&env);
         for option in options.iter() {
-            env.storage()
-                .persistent()
-                .set(&DataKey::VoteCount(option.clone()), &0u32);
+            tally.set(option.clone(), 0u32);
         }
+        env.storage().persistent().set(&DataKey::Tally, &tally);
 
-        // Anketin başlatıldığını işaretle
+        // Voters map'ini başlat (boş)
+        let voters: Map<Address, bool> = Map::new(&env);
+        env.storage().persistent().set(&DataKey::Voters, &voters);
+
+        // Başlatıldı olarak işaretle
         env.storage().instance().set(&DataKey::Initialized, &true);
 
         Ok(())
@@ -103,11 +104,11 @@ impl PollContract {
     ///
     /// # Güvenlik
     /// - `voter.require_auth()` ile imza doğrulaması yapılır
-    /// - Her adres yalnızca bir kez oy verebilir
+    /// - `Map<Address, bool>` ile çift oy önlenir
     /// - Yalnızca geçerli seçeneklere oy verilebilir
     ///
-    /// # Events
-    /// Başarılı her oylamada `poll_voted` eventi yayınlanır.
+    /// # Event
+    /// `("poll", "voted")` → data: `(voter, option, new_count)`
     pub fn vote(
         env: Env,
         voter: Address,
@@ -121,55 +122,47 @@ impl PollContract {
         // 2. Voter'ın bu işlemi imzaladığını doğrula
         voter.require_auth();
 
-        // 3. Bu adres daha önce oy verdiyse hata döndür
-        if env
+        // 3. Voters map'ini yükle ve çift oy kontrolü yap
+        let mut voters: Map<Address, bool> = env
             .storage()
             .persistent()
-            .has(&DataKey::HasVoted(voter.clone()))
-        {
+            .get(&DataKey::Voters)
+            .unwrap();
+
+        if voters.contains_key(voter.clone()) {
             return Err(PollError::AlreadyVoted);
         }
 
-        // 4. Seçeneğin geçerli olup olmadığını kontrol et
-        let options: Vec<Symbol> = env
+        // 4. Tally map'ini yükle ve seçeneğin geçerliliğini kontrol et
+        let mut tally: Map<Symbol, u32> = env
             .storage()
-            .instance()
-            .get(&DataKey::Options)
+            .persistent()
+            .get(&DataKey::Tally)
             .unwrap();
 
-        let is_valid = options.iter().any(|o| o == option);
-        if !is_valid {
+        if !tally.contains_key(option.clone()) {
             return Err(PollError::InvalidOption);
         }
 
-        // 5. Mevcut oy sayısını al ve 1 artır
-        let current_count: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::VoteCount(option.clone()))
-            .unwrap_or(0);
+        // 5. Oy sayısını artır
+        let current = tally.get(option.clone()).unwrap();
+        let new_count = current + 1;
+        tally.set(option.clone(), new_count);
 
-        let new_count = current_count + 1;
+        // 6. Voter'ı kaydet
+        voters.set(voter.clone(), true);
 
-        // 6. Yeni oy sayısını kaydet (Persistent storage)
-        env.storage()
-            .persistent()
-            .set(&DataKey::VoteCount(option.clone()), &new_count);
+        // 7. Güncellenmiş map'leri persistent storage'a geri yaz
+        env.storage().persistent().set(&DataKey::Tally, &tally);
+        env.storage().persistent().set(&DataKey::Voters, &voters);
 
-        // 7. Bu adresi "oy verdi" olarak işaretle
-        env.storage()
-            .persistent()
-            .set(&DataKey::HasVoted(voter.clone()), &true);
-
-        // 8. EVENT YAYINLA — Frontend bu eventi dinleyerek
-        //    gerçek zamanlı güncelleme yapabilir
-        //
-        //    Event yapısı:
-        //    - topics: ["poll_voted", <option>]
-        //    - data:   <new_count>
+        // 8. EVENT YAYINLA
+        // Topics: ("poll", "voted")
+        // Data:   (voter_address, selected_option, new_total_count)
+        // Frontend bu event'i dinleyerek anlık güncelleme yapabilir.
         env.events().publish(
-            (symbol_short!("poll"), symbol_short!("voted"), option.clone()),
-            new_count,
+            (symbol_short!("poll"), symbol_short!("voted")),
+            (voter, option, new_count),
         );
 
         Ok(new_count)
@@ -184,13 +177,13 @@ impl PollContract {
             return Err(PollError::PollNotInitialized);
         }
 
-        let count = env
+        let tally: Map<Symbol, u32> = env
             .storage()
             .persistent()
-            .get(&DataKey::VoteCount(option))
-            .unwrap_or(0);
+            .get(&DataKey::Tally)
+            .unwrap();
 
-        Ok(count)
+        Ok(tally.get(option).unwrap_or(0))
     }
 
     // ----------------------------------------------------------
@@ -202,13 +195,7 @@ impl PollContract {
             return Err(PollError::PollNotInitialized);
         }
 
-        let options = env
-            .storage()
-            .instance()
-            .get(&DataKey::Options)
-            .unwrap();
-
-        Ok(options)
+        Ok(env.storage().instance().get(&DataKey::Options).unwrap())
     }
 
     // ----------------------------------------------------------
@@ -216,92 +203,21 @@ impl PollContract {
     // ----------------------------------------------------------
     /// Bir adresin oy verip vermediğini kontrol eder.
     pub fn has_voted(env: Env, voter: Address) -> bool {
-        env.storage()
+        if !env.storage().instance().has(&DataKey::Initialized) {
+            return false;
+        }
+
+        let voters: Map<Address, bool> = env
+            .storage()
             .persistent()
-            .has(&DataKey::HasVoted(voter))
+            .get(&DataKey::Voters)
+            .unwrap_or(Map::new(&env));
+
+        voters.contains_key(voter)
     }
 }
 
-// ============================================================
-// TESTS
-// ============================================================
+// Test modülünü dahil et
+// `cargo test` komutu bu modülü otomatik olarak çalıştırır.
 #[cfg(test)]
-mod test {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, vec, Env, Symbol};
-
-    fn setup() -> (Env, PollContractClient<'static>, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, PollContract);
-        let client = PollContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        (env, client, admin)
-    }
-
-    #[test]
-    fn test_initialize_and_vote() {
-        let (env, client, admin) = setup();
-
-        let options = vec![
-            &env,
-            Symbol::new(&env, "evet"),
-            Symbol::new(&env, "hayir"),
-        ];
-
-        client.initialize(&admin, &options);
-
-        // İlk oy
-        let voter1 = Address::generate(&env);
-        let count = client.vote(&voter1, &Symbol::new(&env, "evet"));
-        assert_eq!(count, 1);
-
-        // İkinci farklı kullanıcı
-        let voter2 = Address::generate(&env);
-        let count2 = client.vote(&voter2, &Symbol::new(&env, "evet"));
-        assert_eq!(count2, 2);
-
-        // Oy sayısını kontrol et
-        assert_eq!(client.get_vote_count(&Symbol::new(&env, "evet")), 2);
-        assert_eq!(client.get_vote_count(&Symbol::new(&env, "hayir")), 0);
-    }
-
-    #[test]
-    fn test_already_voted_error() {
-        let (env, client, admin) = setup();
-
-        let options = vec![&env, Symbol::new(&env, "evet")];
-        client.initialize(&admin, &options);
-
-        let voter = Address::generate(&env);
-        client.vote(&voter, &Symbol::new(&env, "evet"));
-
-        // Aynı kullanıcı tekrar oy vermeye çalışırsa hata almalı
-        let result = client.try_vote(&voter, &Symbol::new(&env, "evet"));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_invalid_option_error() {
-        let (env, client, admin) = setup();
-
-        let options = vec![&env, Symbol::new(&env, "evet")];
-        client.initialize(&admin, &options);
-
-        let voter = Address::generate(&env);
-        let result = client.try_vote(&voter, &Symbol::new(&env, "belki"));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_poll_not_initialized_error() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, PollContract);
-        let client = PollContractClient::new(&env, &contract_id);
-
-        let voter = Address::generate(&env);
-        let result = client.try_vote(&voter, &Symbol::new(&env, "evet"));
-        assert!(result.is_err());
-    }
-}
+mod test;

@@ -1302,3 +1302,152 @@ Bir `errorResult` (XDR base64) aldığında, [https://stellar.expert/explorer/te
 
 *Bu dosya, her kod güncellemesinde otomatik olarak güncellenmektedir.*
 *Soroban Dokümantasyonu: https://developers.stellar.org/docs/build/smart-contracts*
+
+---
+
+## 14. Bölüm 30: Case-Sensitivity ve Tip Güvenliği
+
+> *"Blockchain'de 'Web3_Soroban' ile 'WEB3_SOROBAN' aynı şey değildir — tıpkı 'evet' ile 'Evet'in farklı şifreler olması gibi."*
+
+---
+
+### Neden `Web3_Soroban` ≠ `WEB3_SOROBAN`?
+
+Soroban akıllı kontratları `Symbol` değerlerini **byte-by-byte** karşılaştırır. Büyük/küçük harf ayrımı kesinlikle korunur:
+
+```
+"Web3_Soroban"   →  bytes: [0x57, 0x65, 0x62, 0x33, 0x5F, 0x53, ...]
+"WEB3_SOROBAN"   →  bytes: [0x57, 0x45, 0x42, 0x33, 0x5F, 0x53, ...]
+                             ↑OK   ↑ farklı!  ↑ farklı!
+```
+
+Bu, kontrat `tally.contains_key(option)` ile oy sayım tablosunu kontrol ettiğinde, `"WEB3_SOROBAN"` anahtarının hiç var olmadığı anlamına gelir — çünkü kontrat `"Web3_Soroban"` ile initialize edilmiştir.
+
+#### Sonuç: `InvalidOption` hatası (kod: 3)
+
+```rust
+// Kontrat tarafı (lib.rs) — initialize sırasında belirlendi:
+// options = ["AI_AGI", "Web3_Soroban", "DeFi_Future", "NFT_Metaverse"]
+
+pub fn vote(env: Env, voter: Address, option: Symbol) -> Result<u32, PollError> {
+    // ...
+    if !tally.contains_key(option.clone()) {
+        return Err(PollError::InvalidOption);  // ← "WEB3_SOROBAN" buraya düşer!
+    }
+    // "Web3_Soroban" ise buraya geçer ✅
+}
+```
+
+#### Bu Projedeki Kesin Eşleşme Tablosu
+
+| UI Butonu (Display Label) | Kontrata Gönderilen (Contract Symbol) | Durum |
+|---------------------------|---------------------------------------|-------|
+| 🤖 Yapay Zeka & AGI | `AI_AGI` | ✅ Doğru |
+| 🌐 Web3 & Soroban | `Web3_Soroban` | ✅ Doğru |
+| 💰 DeFi'nin Geleceği | `DeFi_Future` | ✅ Doğru |
+| 🎨 NFT & Metaverse | `NFT_Metaverse` | ✅ Doğru |
+
+> **⚠️ Kritik:** `KNOWN_OPTIONS` array'i kontratın `initialize` çağrısında kullanılan değerlerle **birebir** eşleşmelidir. Bunu doğrulamak için:
+> ```bash
+> stellar contract invoke \
+>   --id CD53SYMMTIQNZZYPYCXMER67BGLNRGKI46JXFFHFWESW7E3NJUP6BD7K \
+>   --source poll_admin --network testnet \
+>   -- get_options
+> # Çıktı: ["AI_AGI","Web3_Soroban","DeFi_Future","NFT_Metaverse"]
+> ```
+
+---
+
+### Neden `Address` Nesnesi Zorunlu?
+
+Kontratın `vote()` fonksiyonu şu imzaya sahiptir:
+
+```rust
+pub fn vote(env: Env, voter: Address, option: Symbol) -> Result<u32, PollError>
+```
+
+`voter` parametresi bir Soroban `Address` tipidir — ham string değil. Bu kritik bir güvenlik mekanizmasıdır:
+
+```rust
+voter.require_auth();  // ← Bu satır her şeyi değiştirir
+```
+
+`require_auth()`, işlemin gerçekten `voter` adresinin özel anahtarıyla imzalandığını doğrular. Eğer `voter` bir `Address` nesnesi değilse, bu doğrulama çalışmaz.
+
+#### Frontend'de Doğru ve Yanlış Kullanım
+
+```typescript
+// ❌ YANLIŞ — raw string gönderme
+// Soroban bu tipi Address olarak tanımaz → invokeHostFunctionTrapped
+xdr.ScVal.scvString(userAddress)
+xdr.ScVal.scvBytes(Buffer.from(userAddress))
+
+// ✅ DOĞRU — Soroban Address nesnesi
+// new Address(userAddress) → ScVal::Address tipine dönüştürür
+// require_auth() bu tipi bekler ve doğrulayabilir
+new Address(userAddress).toScVal()
+```
+
+#### Neden `invokeHostFunctionTrapped` Hatası Alırsın?
+
+```
+Hata zinciri:
+  Frontend → scvString(userAddress) gönderir
+  Kontrat  → voter.require_auth() çağırır
+  Soroban  → "Bu bir Address değil, string!" → TİP UYUMSUZLUĞU
+  Sonuç    → invokeHostFunctionTrapped (Unauthorized, kod: 5)
+```
+
+Doğru tip kullanıldığında:
+
+```
+Frontend → new Address(userAddress).toScVal() gönderir
+Kontrat  → voter.require_auth() çağırır
+Soroban  → "Bu bir Address, imzayı doğruluyorum..."
+Cüzdan   → İşlem bu adresle imzalanmış → ONAYLANDI ✅
+Sonuç    → Oy kaydedildi
+```
+
+---
+
+### Tip Güvenliği: LABEL_TO_SYMBOL Haritası
+
+Projemizde `LABEL_TO_SYMBOL` sabit haritası, UI etiketleri ile kontrat sembolleri arasındaki ilişkiyi **yaşayan dokümantasyon** olarak kodun içinde tutar:
+
+```typescript
+// ⚠️ CASE-SENSITIVE: UI button labels → exact contract Symbol strings
+const LABEL_TO_SYMBOL: Record<string, string> = {
+    "🤖 Yapay Zeka & AGI":  "AI_AGI",       // ← büyük harf, alt çizgi
+    "🌐 Web3 & Soroban":    "Web3_Soroban", // ← karışık harf, alt çizgi
+    "💰 DeFi'nin Geleceği": "DeFi_Future",  // ← karışık harf, alt çizgi
+    "🎨 NFT & Metaverse":   "NFT_Metaverse",// ← büyük harf, alt çizgi
+};
+```
+
+Bu harita doğrudan `vote()` çağrısında kullanılmaz (çünkü `selectedOption` zaten `KNOWN_OPTIONS`'dan bir anahtar olarak saklanır), ancak iki amaca hizmet eder:
+
+1. **Dokümantasyon**: Hangi display label'ın hangi contract symbol'e karşılık geldiği açıkça görülür
+2. **Güvenlik ağı**: Gelecekte state yönetimi değişirse, bu harita üzerinden doğrulama eklenebilir
+
+---
+
+### Özet: İki Kritik Kural
+
+| Kural | Neden? | Hata Sonucu |
+|-------|--------|-------------|
+| Contract symbol'ü **birebir** gönder (`Web3_Soroban`, `WEB3_SOROBAN` değil) | Kontrat byte-by-byte karşılaştırır | `InvalidOption` (kod: 3) |
+| Voter'ı `Address` nesnesi olarak gönder (`new Address(addr).toScVal()`) | `require_auth()` Address tipini bekler | `invokeHostFunctionTrapped` / Unauthorized (kod: 5) |
+
+> **💡 Usta Notu (Senior Note)**
+>
+> Bu iki hata türü — case mismatch ve tip uyumsuzluğu — Web3 geliştirmesinin en sinsi tuzaklarıdır. Web2'de bir string'i yanlış büyük harfle göndersen, sunucu genellikle tolere eder veya anlamlı bir hata mesajı döner. Blockchain'de ise kontrat kodu değiştirilemez ve hata mesajları XDR formatında şifrelenmiş olarak gelir.
+>
+> **Altın kural**: Kontrat çağrısı yapmadan önce her argümanın tipini ve değerini doğrula:
+> - `Symbol` argümanları için: `KNOWN_OPTIONS.includes(value)` kontrolü yap
+> - `Address` argümanları için: `new Address(addr).toScVal()` kullan, asla raw string gönderme
+> - Şüphe duyduğunda: `stellar contract invoke` ile CLI'dan test et, sonra frontend'e taşı
+
+---
+
+*Bu dosya, her kod güncellemesinde otomatik olarak güncellenmektedir.*
+*Soroban Dokümantasyonu: https://developers.stellar.org/docs/build/smart-contracts*

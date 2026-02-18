@@ -2,22 +2,22 @@
 
 A decentralized voting application built on the **Stellar Blockchain** using **Soroban** smart contracts. This project allows users to participate in live polls securely and transparently using their Stellar wallets.
 
-## 📸 Screenshots
+##  Screenshots
 
 | Poll Interface | Transaction Confirmation |
 |:---:|:---:|
 | ![Poll Interface](assets/screenshot1.png) | ![Transaction History](assets/screenshot2.png) |
 
-> *Note: Please place your screenshots in an `assets` folder in the root directory and name them `screenshot1.png` and `screenshot2.png`.*
 
-## 🚀 Features
+
+## 🚀Features
 
 - **Decentralized Voting:** All votes are recorded on the Stellar blockchain via Soroban contracts.
 - **Wallet Integration:** Seamless connection with **Freighter Wallet**.
 - **Real-time Updates:** View live poll results immediately.
 - **Transparent:** Verifiable transaction history on the blockchain.
 
-## 🛠️ Technology Stack
+##  Technology Stack
 
 - **Frontend:**
   - [Next.js](https://nextjs.org/) (React Framework)
@@ -30,7 +30,7 @@ A decentralized voting application built on the **Stellar Blockchain** using **S
   - **Soroban:** Smart Contracts (Rust)
   - **Network:** Stellar Testnet
 
-## 📂 Project Structure
+##  Project Structure
 
 ```
 CanlıAnket-Wallet/
@@ -40,7 +40,7 @@ CanlıAnket-Wallet/
 └── README.md           # Project documentation
 ```
 
-## 🏁 Getting Started
+##  Getting Started
 
 Follow these instructions to set up the project locally.
 
@@ -83,13 +83,13 @@ Ensure you have the following installed:
 
     Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-## 🗳️ Usage
+## Usage
 
 1.  **Connect Wallet:** Click the "Connect Wallet" button in the top right corner and approve the connection in Freighter.
 2.  **Vote:** Select an option from the active poll and click "Vote".
 3.  **Confirm:** Sign the transaction in your Freighter wallet.
 4.  **View Results:** Watch the vote count update in real-time!
 
-## 📜 License
+##  License
 
 This project is licensed under the MIT License.
